@@ -74,9 +74,9 @@ public:
 	virtual bool isSelected() { return (*mPort & mPinMask) == mPinMask; }
 };
 
-class OutputPin : public Pin {
+class LEDOutputPin : public Pin {
 public:
-	OutputPin(int pin) : Pin(pin) { setOutput(); }
+	LEDOutputPin(int pin) : Pin(pin) { setOutput(); }
 };
 
 class InputPin : public Pin {
@@ -133,9 +133,9 @@ public:
 	virtual bool isSelected() { return (*mPort & mPinMask) == mPinMask; }
 };
 
-class OutputPin : public Pin {
+class LEDOutputPin : public Pin {
 public:
-	OutputPin(int pin) : Pin(pin) { setOutput(); }
+	LEDOutputPin(int pin) : Pin(pin) { setOutput(); }
 };
 
 class InputPin : public Pin {
