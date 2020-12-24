@@ -84,7 +84,7 @@ uint32_t * ESP32RMTController::getPixelBuffer(int size_in_bytes)
 
 // -- Initialize RMT subsystem
 //    This only needs to be done once
-void ESP32RMTController::init()
+void ESP32RMTController::init(gpio_num_t pin)
 {
     if (gInitialized) return;
 
@@ -95,7 +95,7 @@ void ESP32RMTController::init()
         rmt_config_t rmt_tx;
         rmt_tx.channel = rmt_channel_t(i);
         rmt_tx.rmt_mode = RMT_MODE_TX;
-        rmt_tx.gpio_num = gpio_num_t(0);  // The particular pin will be assigned later
+        rmt_tx.gpio_num = pin;  // The particular pin will be assigned later
         rmt_tx.mem_block_num = FASTLED_RMT_MEM_BLOCKS;
         rmt_tx.clk_div = DIVIDER;
         rmt_tx.tx_config.loop_en = false;
@@ -137,11 +137,11 @@ void ESP32RMTController::init()
 
 // -- Show this string of pixels
 //    This is the main entry point for the pixel controller
-void ESP32RMTController::showPixels()
+void IRAM_ATTR ESP32RMTController::showPixels()
 {
     if (gNumStarted == 0) {
         // -- First controller: make sure everything is set up
-        ESP32RMTController::init();
+        ESP32RMTController::init(mPin);
 
 #if FASTLED_ESP32_FLASH_LOCK == 1
         // -- Make sure no flash operations happen right now
@@ -197,7 +197,7 @@ void ESP32RMTController::showPixels()
 // -- Start up the next controller
 //    This method is static so that it can dispatch to the
 //    appropriate startOnChannel method of the given controller.
-void ESP32RMTController::startNext(int channel)
+void IRAM_ATTR ESP32RMTController::startNext(int channel)
 {
     if (gNext < gNumControllers) {
         ESP32RMTController * pController = gControllers[gNext];
@@ -209,7 +209,7 @@ void ESP32RMTController::startNext(int channel)
 // -- Start this controller on the given channel
 //    This function just initiates the RMT write; it does not wait
 //    for it to finish.
-void ESP32RMTController::startOnChannel(int channel)
+void IRAM_ATTR ESP32RMTController::startOnChannel(int channel)
 {
     // -- Assign this channel and configure the RMT
     mRMT_channel = rmt_channel_t(channel);
@@ -250,9 +250,15 @@ void ESP32RMTController::startOnChannel(int channel)
 
 // -- Start RMT transmission
 //    Setting this RMT flag is what actually kicks off the peripheral
-void ESP32RMTController::tx_start()
+void IRAM_ATTR ESP32RMTController::tx_start()
 {
-    rmt_tx_start(mRMT_channel, true);
+    // rmt_tx_start(mRMT_channel, true);
+    // Inline the code for rmt_tx_start, so it can be placed in IRAM
+    RMT.conf_ch[mRMT_channel].conf1.mem_rd_rst = 1;
+    RMT.conf_ch[mRMT_channel].conf1.mem_rd_rst = 0;
+    RMT.int_ena.val &= ~(1 << (mRMT_channel * 3));
+    RMT.int_ena.val |= (1 << (mRMT_channel * 3));
+    RMT.conf_ch[mRMT_channel].conf1.tx_start = 1;
     mLastFill = __clock_cycles();
 }
 
@@ -262,7 +268,7 @@ void ESP32RMTController::tx_start()
 //    handler (below), or as a callback from the built-in
 //    interrupt handler. It is static because we don't know which
 //    controller is done until we look it up.
-void ESP32RMTController::doneOnChannel(rmt_channel_t channel, void * arg)
+void IRAM_ATTR ESP32RMTController::doneOnChannel(rmt_channel_t channel, void * arg)
 {
     ESP32RMTController * pController = gOnChannel[channel];
 
@@ -271,7 +277,11 @@ void ESP32RMTController::doneOnChannel(rmt_channel_t channel, void * arg)
     gpio_matrix_out(pController->mPin, 0x100, 0, 0);
 
     // -- Turn off the interrupts
-    rmt_set_tx_intr_en(channel, false);
+    // rmt_set_tx_intr_en(channel, false);
+    // Inline the code for rmt_tx_stop, so it can be placed in IRAM
+    RMT.int_ena.val &= ~(1 << (channel * 3));
+    RMT.conf_ch[channel].conf1.mem_rd_rst = 1;
+    RMT.conf_ch[channel].conf1.mem_rd_rst = 0;
 
     gOnChannel[channel] = NULL;
     gNumDone++;
@@ -338,11 +348,20 @@ void IRAM_ATTR ESP32RMTController::fillNext(bool check_time)
         if (mLastFill != 0 and now > mLastFill) {
             uint32_t delta = (now - mLastFill);
             if (delta > mMaxCyclesPerFill) {
-                Serial.print(delta);
-                Serial.print(" BAIL ");
-                Serial.println(mCur);
+                // Serial.print(delta);
+                // Serial.print(" BAIL ");
+                // Serial.println(mCur);
+                // rmt_tx_stop(mRMT_channel);
+                // Inline the code for rmt_tx_stop, so it can be placed in IRAM
+                /** -- Go back to the original strategy of just setting mCur = mSize
+                       and letting the regular 'stop' process happen
+                * mRMT_mem_start = 0;
+                RMT.int_ena.val &= ~(1 << (mRMT_channel * 3));
+                RMT.conf_ch[mRMT_channel].conf1.tx_start = 0;
+                RMT.conf_ch[mRMT_channel].conf1.mem_rd_rst = 1;
+                RMT.conf_ch[mRMT_channel].conf1.mem_rd_rst = 0;
+                */
                 mCur = mSize;
-                rmt_tx_stop(mRMT_channel);
             }
         }
     }
@@ -371,10 +390,9 @@ void IRAM_ATTR ESP32RMTController::fillNext(bool check_time)
                 pixeldata <<= 1;
             }
         } else {
-            // -- No more data; signal to the RMT we are done
-            for (uint32_t j = 0; j < 32; j++) {
-                * mRMT_mem_ptr++ = 0;
-            }
+            // -- No more data; signal to the RMT we are done by filling the
+            //    rest of the buffer with zeros
+            *pItem++ = 0;
         }
     }
 
